@@ -122,6 +122,16 @@ stage1() {
 	link "$sdk_local/libexec/availability.pl" "$FAKEROOT_DIR/usr/local/libexec/availability.pl"
 	link "$DEPS/host/bin/mig" "$FAKEROOT_DIR/usr/local/bin/mig"
 	link "$DEPS/host/bin/migcom" "$FAKEROOT_DIR/usr/local/bin/migcom"
+	# osfmk/kern/debug.h, the HFS kext config and three SWEET files include
+	# <TargetConditionals.h>. A kernel build is -nostdinc and the reference's macOS build got
+	# it from BUILD_TREE/sdk-kernel-platform; ours is $FAKEROOT_DIR/usr/local/include/kernel,
+	# which is already on INCFLAGS_SDK. Copy the SDK's (pure macro header, no libc).
+	if [ -f "$MACOS_SDK/usr/include/TargetConditionals.h" ]; then
+		cp -f "$MACOS_SDK/usr/include/TargetConditionals.h" \
+			"$sdk_local/include/kernel/TargetConditionals.h"
+	else
+		die "no TargetConditionals.h in $MACOS_SDK"
+	fi
 	log "fakeroot at $FAKEROOT_DIR (usr/local from the SDK overlay, mig/migcom from host/bin)"
 	# the kernel's half of a private libdispatch header (unifdef exits 1 when it removed something)
 	{ host/bin/unifdef -DOS_FIREHOSE_SPI=1 -DKERNEL=1 libdispatch/os/firehose_buffer_private.h || [ $? -eq 1 ]; } |
