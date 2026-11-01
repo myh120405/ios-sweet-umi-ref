@@ -19,9 +19,14 @@ add_line() {
 # iokit translation units: SweetPlatformExpert/SweetCPU/SweetSurface/
 # SweetFramebuffer already come listed in the patch's iokit/conf/files.arm64.
 add_line iokit/conf/files.arm64 $'iokit/Kernel/arm/SweetGPU.cpp\toptional iokitcpp'
-add_line iokit/conf/files.arm64 $'iokit/Kernel/arm/UmiFtsTouch.cpp\toptional iokitcpp'
 add_line iokit/conf/files.arm64 $'iokit/Kernel/arm/UmiKeys.cpp\toptional iokitcpp'
-add_line iokit/conf/files.arm64 $'iokit/Kernel/arm/UmiSweetBridge.cpp\toptional iokitcpp'
+# NOT built: UmiFtsTouch.cpp and UmiSweetBridge.cpp.
+# The published snapshot has UmiFtsTouch.cpp but not the 17 private headers it
+# #includes (UmiTouchPlatform.h, UmiBoardBoost.h, UmiFtsPowerSequence.h,
+# UmiFtsGpiCore.h, UmiFts*.inc, ...).  UmiSweetBridge calls native_touch_probe()
+# and umi_touch_next(), both defined only in UmiFtsTouch.cpp, so it cannot link
+# without it either.  The buildable touch path is bsd/dev/sweet_touch.c, which
+# the patch already lists.  See reports/ref-kernel-build.md.
 # bsd/dev/sweet_gpu.c brings the GPU up and is called from sweet_ufs.c; the
 # patch stages the file but does not list it.
 add_line bsd/conf/files $'bsd/dev/sweet_gpu.c\t\tstandard'
@@ -34,6 +39,6 @@ echo "ref-integrate: iokit units + sweet_gpu.c listed; bsd/dev/UmiRootVolume.h w
 
 # Fail loudly if the makefile lists did not take (a silently unbuilt touch or
 # GPU driver would look like a runtime bug).
-grep -q 'UmiFtsTouch.cpp' iokit/conf/files.arm64 || { echo "::error::UmiFtsTouch.cpp not listed"; exit 1; }
 grep -q 'SweetGPU.cpp' iokit/conf/files.arm64 || { echo "::error::SweetGPU.cpp not listed"; exit 1; }
+grep -q 'UmiKeys.cpp' iokit/conf/files.arm64 || { echo "::error::UmiKeys.cpp not listed"; exit 1; }
 grep -q 'sweet_gpu.c' bsd/conf/files || { echo "::error::sweet_gpu.c not listed"; exit 1; }
