@@ -28,6 +28,12 @@ export XNU_SDK_VERSION=${XNU_SDK_VERSION:-13.3}
 export XNU_SDK_PATH=$DEPS/sdk/MacOSX13.3.xnu.sdk
 export XNU_PLATFORM_PATH=$XNU_SDK_PATH/Platforms/MacOSX.platform
 
+# The reference patch (umi-v6) replaced $(SDKROOT)/usr/local with $(FAKEROOT_DIR)/usr/local
+# for the firehose headers/library, availability.pl and the mig tools: their macOS build kept
+# that tree in BUILD_TREE/fakeroot.  linux/setup-deps.sh --stage1 builds one out of the SDK
+# overlay and deps/host/bin, so the reference makefiles find the layout they expect.
+export FAKEROOT_DIR=${FAKEROOT_DIR:-$DEPS/fakeroot}
+
 # what the macOS workflow passes as env to darwin-xnu-build's patch stage
 export MACHINE_CONFIG=${MACHINE_CONFIG:-SWEET}
 export MACOS_VERSION=${MACOS_VERSION:-13.5}

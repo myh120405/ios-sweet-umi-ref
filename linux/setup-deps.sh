@@ -112,6 +112,17 @@ stage1() {
 	mkdir -p "$sdk_local/include/kernel/os" "$sdk_local/include/os" "$sdk_local/lib/kernel" "$sdk_local/libexec"
 	update "$sdk_local/libexec/availability.pl" < AvailabilityVersions/availability.pl
 	[ -x "$sdk_local/libexec/availability.pl" ] || chmod +x "$sdk_local/libexec/availability.pl"
+	# The reference patch's makefiles use $(FAKEROOT_DIR)/usr/local instead of
+	# $(SDKROOT)/usr/local (see linux/env.sh); give them the same layout.
+	mkdir -p "$FAKEROOT_DIR/usr/local/include" "$FAKEROOT_DIR/usr/local/lib" \
+		"$FAKEROOT_DIR/usr/local/libexec" "$FAKEROOT_DIR/usr/local/bin"
+	link "$sdk_local/include/kernel" "$FAKEROOT_DIR/usr/local/include/kernel"
+	link "$sdk_local/include/os" "$FAKEROOT_DIR/usr/local/include/os"
+	link "$sdk_local/lib/kernel" "$FAKEROOT_DIR/usr/local/lib/kernel"
+	link "$sdk_local/libexec/availability.pl" "$FAKEROOT_DIR/usr/local/libexec/availability.pl"
+	link "$DEPS/host/bin/mig" "$FAKEROOT_DIR/usr/local/bin/mig"
+	link "$DEPS/host/bin/migcom" "$FAKEROOT_DIR/usr/local/bin/migcom"
+	log "fakeroot at $FAKEROOT_DIR (usr/local from the SDK overlay, mig/migcom from host/bin)"
 	# the kernel's half of a private libdispatch header (unifdef exits 1 when it removed something)
 	{ host/bin/unifdef -DOS_FIREHOSE_SPI=1 -DKERNEL=1 libdispatch/os/firehose_buffer_private.h || [ $? -eq 1 ]; } |
 		update "$sdk_local/include/kernel/os/firehose_buffer_private.h"
