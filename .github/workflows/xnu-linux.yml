@@ -99,8 +99,8 @@ jobs:
           size=$(stat -c %s "$K"); echo "kernel size: $size bytes"
           [ "$size" -gt 5000000 ] || { echo "::error::$K is only $size bytes"; exit 1; }
           file "$K"
-          for s in sweet_touch_init SweetFramebuffer_start sweet_ufs_rootdev; do
-            if deps/host/bin/nm -n "$K.unstripped" 2>/dev/null | grep -q -w "$s"; then echo "symbol $s: present"; else echo "::warning::symbol $s not found in .unstripped"; fi
+          for s in sweet_touch_init sweet_ufs_rootdev umi_sweet_touch_start sweet_log_append; do
+            if deps/host/bin/nm -n "$K.unstripped" 2>/dev/null | grep -q "_$s\$"; then echo "symbol _$s: present"; else echo "::warning::symbol _$s not found in .unstripped"; fi
           done
           mkdir -p out
           cp "$K" out/kernel.development.sweet
@@ -109,12 +109,19 @@ jobs:
       - name: Rebuild with our root transport (same kernel, our sweet_ufs.c)
         run: |
           set -o pipefail
+          K="$GITHUB_WORKSPACE/xnu-src/$XNU_TAG/BUILD/obj/${KERNEL_CONFIG}_ARM64_${MACHINE_CONFIG}/kernel.$(echo $KERNEL_CONFIG | tr A-Z a-z).$(echo $MACHINE_CONFIG | tr A-Z a-z)"
+          before=$(sha256sum "$K" | cut -d' ' -f1)
           cp vendor/sweet_ufs_ourroot.c "$GITHUB_WORKSPACE/xnu-src/$XNU_TAG/bsd/dev/sweet_ufs.c"
           touch "$GITHUB_WORKSPACE/xnu-src/$XNU_TAG/bsd/dev/sweet_ufs.c"
           bash linux/build.sh -k 2>&1 | tee -a compat.log || true
           tail -20 compat.log
-          K="$GITHUB_WORKSPACE/xnu-src/$XNU_TAG/BUILD/obj/${KERNEL_CONFIG}_ARM64_${MACHINE_CONFIG}/kernel.$(echo $KERNEL_CONFIG | tr A-Z a-z).$(echo $MACHINE_CONFIG | tr A-Z a-z)"
+          if grep -q 'Undefined symbols' compat.log; then
+            echo "::error::compat rebuild failed to link"; sed -n '/Undefined symbols/,$p' compat.log | head -40; exit 1
+          fi
           [ -s "$K" ] || { echo "::error::compat kernel missing"; exit 1; }
+          after=$(sha256sum "$K" | cut -d' ' -f1)
+          [ "$before" != "$after" ] || { echo "::error::compat kernel is identical to the reference kernel - it was not relinked"; exit 1; }
+          echo "compat kernel differs from the reference kernel: $before -> $after"
           cp "$K" out/kernel.development.sweet.ourroot
           cp "$K.unstripped" out/kernel.development.sweet.ourroot.unstripped 2>/dev/null || true
           cd out && sha256sum kernel.* > SHA256SUMS && cat SHA256SUMS
