@@ -1,0 +1,150 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 14fe2aa..da990b0 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -87,6 +87,145 @@ class IOMobileFramebuffer : public IOService {
+ };
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
++/*
++ * Drawing diagnostics (see the notes in the ring dump order):
++ *   SWEET FB: vsync   <count> <dirty> <fPhys> <fPixels>
++ *   SWEET FB: vram-pre/post/flushed   four pixels of the panel memory
++ *   SWEET FB: present <n> <rec> <fPixels> <dirty>
++ * The kernel console stops drawing after the five sweet_early lines (those go
++ * through a VA=PA mapping in osfmk/arm64/sweet_early.c) and CoreAnimation's
++ * frames never appear, so the open question is whether the driver's own
++ * mapping of the panel is the same memory. These lines answer it; they are
++ * appended to the persistent ring because printf() is muted by sweetquiet=1.
++ */
++extern "C" void sweet_log_append(const char *c, int size);      /* bsd/dev/sweet_ufs.c */
++
++static char *
++sweet_put_str(char *p, const char *text)
++{
++	while (*text != '\0') {
++		*p++ = *text++;
++	}
++	return p;
++}
++
++static char *
++sweet_put_hex(char *p, unsigned long long v)
++{
++	static const char digits[] = "0123456789abcdef";
++	char tmp[16];
++	int n = 0;
++
++	*p++ = '0';
++	*p++ = 'x';
++	do {
++		tmp[n++] = digits[v & 0xf];
++		v >>= 4;
++	} while (v != 0);
++	while (n > 0) {
++		*p++ = tmp[--n];
++	}
++	return p;
++}
++
++static void
++sweet_note4(const char *prefix, const char *tag, unsigned long long a,
++    unsigned long long b, unsigned long long c, unsigned long long d)
++{
++	char line[192];
++	char *p = line;
++	const unsigned long long values[4] = { a, b, c, d };
++
++	p = sweet_put_str(p, prefix);
++	p = sweet_put_str(p, ": ");
++	p = sweet_put_str(p, tag);
++	for (int i = 0; i < 4; i++) {
++		*p++ = ' ';
++		p = sweet_put_hex(p, values[i]);
++	}
++	*p++ = '\n';
++	sweet_log_append(line, (int)(p - line));
++}
++
++static void
++sweet_fb_note(const char *tag, unsigned long long a, unsigned long long b,
++    unsigned long long c, unsigned long long d)
++{
++	sweet_note4("SWEET FB", tag, a, b, c, d);
++}
++
++/* Called from pexpert/arm/pe_serial.c (the text console on the panel). */
++extern "C" void
++sweet_fbcon_note(const char *tag, unsigned long long a, unsigned long long b,
++    unsigned long long c, unsigned long long d)
++{
++	sweet_note4("SWEET FBCON", tag, a, b, c, d);
++}
++
++/*
++ * Clean+invalidate the cache lines covering a range and wait for the writes to
++ * reach memory. If the driver's mapping of the panel comes back cached instead
++ * of write-combining, the pixels stay in the CPU cache and the panel (not
++ * coherent) never sees them: vram-post would read back the new pixels while
++ * vram-flushed is the one that changes what is on the screen.
++ */
++extern "C" void
++sweet_fb_flush_range(void *addr, unsigned long len)
++{
++	unsigned long long p = (unsigned long long)addr & ~0x3full;
++	unsigned long long end = (unsigned long long)addr + len;
++
++	for (; p < end; p += 64) {
++		__asm__ volatile("dc civac, %0" :: "r"((void *)(uintptr_t)p) : "memory");
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++
++/*
++ * The driver's own mapping of the panel, made the same way SweetSurface does
++ * it (IOMemoryDescriptor::withPhysicalAddress + map(kIOMapWriteCombineCache)),
++ * then the same read/write/flush test. Called from the platform expert's
++ * reporter thread a few seconds in, i.e. after AppleCLCD::start().
++ */
++extern "C" void
++sweet_fb_probe(unsigned long long phys, unsigned long long len)
++{
++	IOMemoryDescriptor *mem;
++	IOMemoryMap *map;
++	volatile uint32_t *px;
++
++	if (phys == 0 || len < 64) {
++		sweet_fb_note("probe-noarg", phys, len, 0, 0);
++		return;
++	}
++	mem = IOMemoryDescriptor::withPhysicalAddress((IOPhysicalAddress)phys,
++	    (IOByteCount)len, kIODirectionOut);
++	if (mem == NULL) {
++		sweet_fb_note("probe-nomem", phys, len, 0, 0);
++		return;
++	}
++	map = mem->map(kIOMapWriteCombineCache);
++	if (map == NULL) {
++		sweet_fb_note("probe-nomap", phys, len, 0, 0);
++		mem->release();
++		return;
++	}
++	px = (volatile uint32_t *)map->getVirtualAddress();
++	sweet_fb_note("probe-mapdrv", phys, (unsigned long long)px, len, 0);
++	if (px != NULL) {
++		sweet_fb_note("vram-pre", px[0], px[1], px[2], px[3]);
++		for (int i = 0; i < 16; i++) {
++			px[i] = 0xFFFF0000u;
++		}
++		sweet_fb_note("vram-post", px[0], px[1], px[2], px[3]);
++		sweet_fb_flush_range((void *)px, 64);
++		sweet_fb_note("vram-flushed", px[0], px[1], px[2], px[3]);
++	}
++	map->release();
++	mem->release();
++}
++
+ 
+ class IOMobileFramebufferUserClient;
+ 

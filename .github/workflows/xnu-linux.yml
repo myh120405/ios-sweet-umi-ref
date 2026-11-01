@@ -1,0 +1,144 @@
+name: xnu-ref-linux
+
+# Build the reference implementation (leafall903/ios-sweet-umi, tag
+# umi-ios16.5-v6) on ubuntu-24.04:
+#   xnu-8796.141.3 @ 1b191cb5 + vendor/umi-v6.patch (consolidated, self-contained)
+#   + the five units the reference integrated outside its makefile list
+#   + ARM64_BOARD_CONFIG_SWEET / DEVELOPMENT, SDKROOT=macosx (MacOSX13.3.sdk).
+#
+# Two kernels come out of one run:
+#   kernel.development.sweet           reference root transport (their low-DMA
+#                                      contract: needs their loader's dma-pool
+#                                      property and a 16 GiB HFSX root identity)
+#   kernel.development.sweet.ourroot   same kernel, bsd/dev/sweet_ufs.c replaced
+#                                      by our proven driver (/sweet-ufs ADT node,
+#                                      rd=ufsroot0) so it can root our image.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "linux/**"
+      - "vendor/**"
+      - ".github/workflows/xnu-linux.yml"
+
+concurrency:
+  group: xnu-ref-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  XNU_TAG: xnu-8796.141.3
+  XNU_TAG_SHA: 1b191cb58250d0705d8a51287127505aa4bc0789
+  MACHINE_CONFIG: SWEET
+  KERNEL_CONFIG: DEVELOPMENT
+  THEOS: ${{ github.workspace }}/theos
+  TOOLCHAIN_URL: https://github.com/L1ghtmann/llvm-project/releases/download/test-210562a/iOSToolchain-x86_64.tar.xz
+
+jobs:
+  build:
+    name: xnu reference (ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Toolchain packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld llvm flex bison m4 perl python3 autoconf automake \
+            libtool curl xz-utils git build-essential patch libxml2 libxml2-dev libtinfo6 \
+            libncurses-dev uuid-dev pkg-config jq file
+          clang --version | head -1
+
+      - name: theos and its Linux toolchain (cctools - ld64, nm, strip, libtool)
+        run: |
+          git clone --depth 1 https://github.com/theos/theos.git "$THEOS"
+          mkdir -p "$THEOS/toolchain"
+          curl -fsSL --retry 5 "$TOOLCHAIN_URL" | tar -xJf - -C "$THEOS/toolchain/"
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+          test -x "$THEOS/toolchain/linux/iphone/bin/ld"
+
+      - name: macOS 13.3 SDK (the SDKROOT the kernel is compiled against)
+        run: |
+          source linux/env.sh
+          bash linux/setup-sdk.sh
+          test -d "$MACOS_SDK/System/Library/Frameworks/Kernel.framework"
+
+      - name: XNU + reference patch tree
+        run: |
+          set -o pipefail
+          bash linux/apply-ref.sh 2>&1 | tee apply-ref.log
+
+      - name: Dependencies, stage 1 (mig, unifdef, csh, the SDK overlay)
+        run: bash linux/setup-deps.sh --stage1
+
+      - name: Export the kernel's headers
+        run: bash linux/build.sh exporthdrs 2>&1 | tee -a exporthdrs.log
+
+      - name: Dependencies, stage 2 (libfirehose_kernel)
+        run: bash linux/setup-deps.sh --stage2
+
+      - name: Build the reference kernel
+        run: |
+          bash linux/build-with-iig.sh || true
+          tail -40 build.log
+
+      - name: Check the reference kernel
+        run: |
+          K="$GITHUB_WORKSPACE/xnu-src/$XNU_TAG/BUILD/obj/${KERNEL_CONFIG}_ARM64_${MACHINE_CONFIG}/kernel.$(echo $KERNEL_CONFIG | tr A-Z a-z).$(echo $MACHINE_CONFIG | tr A-Z a-z)"
+          echo "kernel path: $K"
+          grep 'built kernel at' build.log || true
+          [ -s "$K" ] || { echo "::error::no kernel at $K"; grep -n -m 60 -E "error:|Undefined symbols|referenced from" build.log || true; exit 1; }
+          size=$(stat -c %s "$K"); echo "kernel size: $size bytes"
+          [ "$size" -gt 5000000 ] || { echo "::error::$K is only $size bytes"; exit 1; }
+          file "$K"
+          for s in sweet_touch_init SweetFramebuffer_start sweet_ufs_rootdev; do
+            if deps/host/bin/nm -n "$K.unstripped" 2>/dev/null | grep -q -w "$s"; then echo "symbol $s: present"; else echo "::warning::symbol $s not found in .unstripped"; fi
+          done
+          mkdir -p out
+          cp "$K" out/kernel.development.sweet
+          cp "$K.unstripped" out/kernel.development.sweet.unstripped 2>/dev/null || true
+
+      - name: Rebuild with our root transport (same kernel, our sweet_ufs.c)
+        run: |
+          set -o pipefail
+          cp vendor/sweet_ufs_ourroot.c "$GITHUB_WORKSPACE/xnu-src/$XNU_TAG/bsd/dev/sweet_ufs.c"
+          touch "$GITHUB_WORKSPACE/xnu-src/$XNU_TAG/bsd/dev/sweet_ufs.c"
+          bash linux/build.sh -k 2>&1 | tee -a compat.log || true
+          tail -20 compat.log
+          K="$GITHUB_WORKSPACE/xnu-src/$XNU_TAG/BUILD/obj/${KERNEL_CONFIG}_ARM64_${MACHINE_CONFIG}/kernel.$(echo $KERNEL_CONFIG | tr A-Z a-z).$(echo $MACHINE_CONFIG | tr A-Z a-z)"
+          [ -s "$K" ] || { echo "::error::compat kernel missing"; exit 1; }
+          cp "$K" out/kernel.development.sweet.ourroot
+          cp "$K.unstripped" out/kernel.development.sweet.ourroot.unstripped 2>/dev/null || true
+          cd out && sha256sum kernel.* > SHA256SUMS && cat SHA256SUMS
+
+      - name: Upload kernels
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xnu-ref-kernel
+          path: |
+            out/kernel.*
+            out/SHA256SUMS
+          if-no-files-found: warn
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xnu-ref-logs
+          path: |
+            build.log
+            compat.log
+            apply-ref.log
+            exporthdrs.log
+            deps/exporthdrs.log
+            deps/mig-build.log
+          if-no-files-found: warn

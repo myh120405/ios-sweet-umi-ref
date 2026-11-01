@@ -1,0 +1,7 @@
+xnu-src/
+deps/
+theos/
+out/
+*.log
+kernel.syms
+linux/iig-impl/
